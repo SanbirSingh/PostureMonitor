@@ -1,0 +1,188 @@
+/* Base Styles */
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f5f7fa;
+}
+
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+/* Header Styles */
+.app-header {
+  width: 100%;
+  max-width: 800px;
+  background-color: #3b82f6;
+  padding: 20px;
+  border-radius: 10px 10px 0 0;
+  color: white;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+/* Content Layout */
+.app-content {
+  width: 100%;
+  max-width: 800px;
+  background-color: white;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px;
+  border-radius: 0 0 10px 10px;
+  box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+}
+
+@media (min-width: 768px) {
+  .app-content {
+    flex-direction: row;
+  }
+}
+
+/* Camera Section */
+.camera-section {
+  flex: 1;
+}
+
+.canvas-wrapper {
+  position: relative;
+  margin-bottom: 20px;
+}
+
+.posture-canvas {
+  width: 100%;
+  height: auto;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.monitoring-indicator {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background-color: #3b82f6;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Control Section */
+.control-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.status-card {
+  background-color: #f9fafb;
+  padding: 15px;
+  border-radius: 8px;
+  border-left: 4px solid #e5e7eb;
+}
+
+.status-card h2 {
+  margin: 0 0 10px 0;
+  font-size: 18px;
+  color: #374151;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.status-dot.good {
+  background-color: #10b981;
+}
+
+.status-dot.bad {
+  background-color: #ef4444;
+}
+
+.status-dot.neutral {
+  background-color: #9ca3af;
+}
+
+.status-text {
+  font-weight: 500;
+}
+
+.status-time {
+  margin: 0;
+  font-size: 16px;
+  color: #4b5563;
+}
+
+/* Button Styles */
+.check-button {
+  width: 100%;
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.check-button:hover {
+  background-color: #2563eb;
+}
+
+/* Footer/Tip Box */
+.app-footer {
+  width: 100%;
+  max-width: 800px;
+  margin-top: 20px;
+}
+
+.tip-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background-color: #fef3c7;
+  border-left: 4px solid #f59e0b;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+.tip-icon {
+  font-size: 20px;
+  color: #d97706;
+}
+
+.tip-text {
+  margin: 0;
+  font-size: 14px;
+  color: #92400e;
+}
+
+/* Utility Classes */
+.hidden-video {
+  display: none;
+}

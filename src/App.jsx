@@ -12,7 +12,7 @@ function App() {
   const timeoutRef = useRef(null);
   const streamRef = useRef(null);
   const notificationCooldownRef = useRef(0);
-  const shouldProcessFramesRef = useRef(false); // NEW: Control frame processing
+  const shouldProcessFramesRef = useRef(false);
 
   // State
   const [postureStatus, setPostureStatus] = useState('neutral');
@@ -25,7 +25,7 @@ function App() {
   // Cleanup all resources
   const stopAll = useCallback(async () => {
     isActiveRef.current = false;
-    shouldProcessFramesRef.current = false; // NEW: Stop frame processing
+    shouldProcessFramesRef.current = false;
     setIsMonitoring(false);
     notificationCooldownRef.current = 0;
     
@@ -81,7 +81,58 @@ function App() {
     setPostureStatus('neutral');
   }, []);
 
-  // Load MediaPipe scripts
+  // Cleanup only the current monitoring session (keep interval and pose detection running)
+  const stopMonitoringSession = useCallback(async () => {
+    shouldProcessFramesRef.current = false;
+    setIsMonitoring(false);
+    
+    // Clear timeout
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    // Stop camera processing
+    if (cameraRef.current) {
+      try {
+        cameraRef.current.stop();
+      } catch (e) {
+        console.error('Error stopping camera:', e);
+      }
+      cameraRef.current = null;
+    }
+
+    // DON'T close pose detection here - keep it alive for reuse
+    // if (poseRef.current) {
+    //   try {
+    //     await poseRef.current.close();
+    //   } catch (e) {
+    //     console.error('Error closing pose detection:', e);
+    //   }
+    //   poseRef.current = null;
+    // }
+
+    // Stop video stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject = null;
+    }
+
+    // Clear canvas
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+
+    // Set status to neutral after stopping session
+    setPostureStatus('neutral');
+  }, []);
+
+  // Load MediaPipe scripts with proper asset configuration
   useEffect(() => {
     const loadScript = (src) => new Promise((resolve, reject) => {
       const script = document.createElement('script');
@@ -98,6 +149,14 @@ function App() {
           loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js'),
           loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js')
         ]);
+        
+        // Configure MediaPipe assets loading
+        window.POSE_SOLUTION_CONFIG = {
+          locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+          }
+        };
+        
         setScriptsReady(true);
       } catch (error) {
         console.error('Failed to load MediaPipe:', error);
@@ -122,7 +181,10 @@ function App() {
       }
 
       const pose = new window.Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        locateFile: (file) => {
+          return window.POSE_SOLUTION_CONFIG?.locateFile(file) || 
+                 `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }
       });
 
       pose.setOptions({
@@ -133,7 +195,6 @@ function App() {
       });
 
       pose.onResults((results) => {
-        // NEW: Only process results if we should be processing frames
         if (!shouldProcessFramesRef.current || !canvasRef.current || !videoRef.current) return;
 
         const canvas = canvasRef.current;
@@ -166,7 +227,6 @@ function App() {
 
             setPostureStatus(isBadPosture ? 'bad' : 'good');
             
-            // Send notification only if monitoring is active and cooldown has passed
             if (isBadPosture && window.electron?.sendPostureNotification && isActiveRef.current) {
               const now = Date.now();
               if (now - notificationCooldownRef.current > 30000) {
@@ -191,20 +251,8 @@ function App() {
     if (!isActiveRef.current) return;
 
     try {
-      // Clean up any previous session but keep pose detection
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-
-      if (cameraRef.current) {
-        try {
-          cameraRef.current.stop();
-        } catch (e) {
-          console.error('Error stopping camera:', e);
-        }
-        cameraRef.current = null;
-      }
+      // Clean up any previous session (but keep pose detection)
+      await stopMonitoringSession();
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: 'user' },
@@ -222,20 +270,18 @@ function App() {
       
       await videoRef.current.play().catch(console.warn);
 
+      // Initialize pose detection if not already done
       const poseReady = await initializePoseDetection();
       if (!poseReady) return;
 
-      // NEW: Start processing frames
       shouldProcessFramesRef.current = true;
 
       cameraRef.current = new window.Camera(videoRef.current, {
         onFrame: async () => {
-          // NEW: Only process frames if we should be processing
           if (!shouldProcessFramesRef.current || !poseRef.current) return;
           try {
             await poseRef.current.send({ image: videoRef.current });
           } catch (error) {
-            // Ignore errors when not active
             if (shouldProcessFramesRef.current) {
               console.error('Frame processing error:', error);
             }
@@ -260,21 +306,27 @@ function App() {
       console.error('Posture check failed:', error);
       setCameraError(error.message);
     } finally {
-      // NEW: Stop processing frames before cleanup
-      shouldProcessFramesRef.current = false;
-      
+      // Only stop the current monitoring session, NOT the entire interval
       if (isActiveRef.current) {
-        await stopAll();
+        await stopMonitoringSession();
       }
     }
-  }, [initializePoseDetection, stopAll]);
+  }, [initializePoseDetection, stopMonitoringSession]);
 
   const startMonitoring = useCallback(() => {
     if (isActiveRef.current) return;
     
     isActiveRef.current = true;
+    
+    // Start the first check immediately
     checkPosture();
-    intervalRef.current = setInterval(checkPosture, intervalMinutes * 60 * 1000);
+    
+    // Set up interval for subsequent checks
+    intervalRef.current = setInterval(() => {
+      if (isActiveRef.current) {
+        checkPosture();
+      }
+    }, intervalMinutes * 60 * 1000);
   }, [checkPosture, intervalMinutes]);
 
   const handleStop = useCallback(async () => {
@@ -282,6 +334,7 @@ function App() {
     
     await stopAll();
   }, [stopAll]);
+
 
   return (
     <div className="app-container">
@@ -337,7 +390,7 @@ function App() {
             <button
               className="stop-button"
               onClick={handleStop}
-              disabled={!isMonitoring}
+              disabled={!isMonitoring && !isActiveRef.current}
             >
               Stop Monitoring
             </button>

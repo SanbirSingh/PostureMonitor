@@ -1,21 +1,19 @@
-// forge.config.cjs
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
-const path = require('path')
 module.exports = {
   packagerConfig: {
     asar: true,
-    extraResource: [
-      path.join(__dirname, '.vite-electron')
-    ]
+    icon: './public/icon',
+    // extraResource: ['./public/icon.png']
   },
   rebuildConfig: {},
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
       config: {
-        name: 'posture_monitor'
+        name: 'posture_monitor',
+        // setupIcon: './public/icon.png'
       }
     }
   ],
@@ -26,6 +24,10 @@ module.exports = {
         build: [
           {
             entry: '.vite-electron/main.js',
+            config: 'vite.config.js'
+          },
+          {
+            entry: '.vite-electron/preload.js',
             config: 'vite.config.js'
           }
         ],

@@ -2,20 +2,24 @@
   "name": "posture-monitor",
   "private": true,
   "version": "0.0.0",
-  "type": "commonjs",
+  "type": "module",
   "main": ".vite-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "electron-forge start",
+    "start": "vite build && electron .",
+    "electron": "electron .",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "electron-dev": "electron . --dev"
   },
   "dependencies": {
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/pose": "^0.5.1675469404",
+    "@types/lodash": "^4.17.20",
+    "lodash": "^4.17.21",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

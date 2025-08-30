@@ -1,232 +1,390 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import './App.css';
 
 function App() {
+  // Refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const poseRef = useRef(null);
   const cameraRef = useRef(null);
   const intervalRef = useRef(null);
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  const isActiveRef = useRef(false);
+  const timeoutRef = useRef(null);
+  const streamRef = useRef(null);
+  const notificationCooldownRef = useRef(0);
+  const shouldProcessFramesRef = useRef(false); // NEW: Control frame processing
+
+  // State
   const [postureStatus, setPostureStatus] = useState('neutral');
-  const [lastChecked, setLastChecked] = useState(null);
+  const [cameraError, setCameraError] = useState(null);
+  const [intervalMinutes, setIntervalMinutes] = useState(3);
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [scriptsReady, setScriptsReady] = useState(false);
+  const [loading, setLoading] = useState(false);
 
+  // Cleanup all resources
+  const stopAll = useCallback(async () => {
+    isActiveRef.current = false;
+    shouldProcessFramesRef.current = false; // NEW: Stop frame processing
+    setIsMonitoring(false);
+    notificationCooldownRef.current = 0;
+    
+    // Clear interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    // Clear timeout
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    // Stop camera processing
+    if (cameraRef.current) {
+      try {
+        cameraRef.current.stop();
+      } catch (e) {
+        console.error('Error stopping camera:', e);
+      }
+      cameraRef.current = null;
+    }
+
+    // Close pose detection
+    if (poseRef.current) {
+      try {
+        await poseRef.current.close();
+      } catch (e) {
+        console.error('Error closing pose detection:', e);
+      }
+      poseRef.current = null;
+    }
+
+    // Stop video stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject = null;
+    }
+
+    // Clear canvas
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+
+    // Set status to neutral after stopping
+    setPostureStatus('neutral');
+  }, []);
+
+  // Load MediaPipe scripts
   useEffect(() => {
-    let scriptsLoaded = 0;
-    const requiredScripts = 2;
+    const loadScript = (src) => new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+      document.head.appendChild(script);
+    });
 
-    const checkInitialization = () => {
-      scriptsLoaded++;
-      if (scriptsLoaded === requiredScripts) {
-        initializePoseDetection();
+    const loadMediaPipe = async () => {
+      try {
+        setLoading(true);
+        await Promise.all([
+          loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js'),
+          loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js')
+        ]);
+        setScriptsReady(true);
+      } catch (error) {
+        console.error('Failed to load MediaPipe:', error);
+        setCameraError('Failed to load posture detection. Please check your internet connection.');
+      } finally {
+        setLoading(false);
       }
     };
 
-    // Load MediaPipe scripts
-    const scriptPose = document.createElement('script');
-    scriptPose.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js';
-    scriptPose.onload = checkInitialization;
-    document.body.appendChild(scriptPose);
+    loadMediaPipe();
 
-    const scriptCamera = document.createElement('script');
-    scriptCamera.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
-    scriptCamera.onload = checkInitialization;
-    document.body.appendChild(scriptCamera);
+    return () => {
+      stopAll();
+    };
+  }, [stopAll]);
 
-    const initializePoseDetection = () => {
-      poseRef.current = new window.Pose({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-        }
+  const initializePoseDetection = useCallback(async () => {
+    try {
+      // Don't recreate pose if it already exists and is working
+      if (poseRef.current) {
+        return true;
+      }
+
+      const pose = new window.Pose({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
       });
 
-      poseRef.current.setOptions({
+      pose.setOptions({
         modelComplexity: 1,
         smoothLandmarks: true,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
       });
 
-      poseRef.current.onResults((results) => {
+      pose.onResults((results) => {
+        // NEW: Only process results if we should be processing frames
+        if (!shouldProcessFramesRef.current || !canvasRef.current || !videoRef.current) return;
+
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
-        ctx.save();
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw camera feed
-        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-        
-        // Draw pose landmarks if detected
+        if (results.image) {
+          ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+        }
+
         if (results.poseLandmarks) {
-          drawLandmarks(ctx, results.poseLandmarks);
-          
-          const leftShoulder = results.poseLandmarks[11];
-          const rightShoulder = results.poseLandmarks[12];
-          
-          if (leftShoulder.y > 0.7 || rightShoulder.y > 0.7) {
-            setPostureStatus('bad');
-            showPostureAlert();
-          } else {
-            setPostureStatus('good');
+          const lm = results.poseLandmarks;
+          const leftShoulder = lm[11];
+          const rightShoulder = lm[12];
+          const leftEar = lm[7];
+          const rightEar = lm[8];
+          const nose = lm[0];
+
+          if (leftShoulder && rightShoulder && leftEar && rightEar && nose) {
+            const shoulderDiff = Math.abs(leftShoulder.y - rightShoulder.y);
+            const neckTilt = Math.abs(leftEar.y - rightEar.y);
+            const shoulderMidX = (leftShoulder.x + rightShoulder.x) / 2;
+            const headForward = Math.abs(nose.x - shoulderMidX) > 0.05;
+            const shoulderMidY = (leftShoulder.y + rightShoulder.y) / 2;
+            const headLow = nose.y > shoulderMidY + 0.05;
+
+            const isBadPosture = shoulderDiff > 0.05 || neckTilt > 0.03 || headForward || headLow;
+
+            setPostureStatus(isBadPosture ? 'bad' : 'good');
+            
+            // Send notification only if monitoring is active and cooldown has passed
+            if (isBadPosture && window.electron?.sendPostureNotification && isActiveRef.current) {
+              const now = Date.now();
+              if (now - notificationCooldownRef.current > 30000) {
+                window.electron.sendPostureNotification(true);
+                notificationCooldownRef.current = now;
+              }
+            }
           }
         }
-        ctx.restore();
       });
 
-      // Initialize camera
-      if (videoRef.current) {
-        cameraRef.current = new window.Camera(videoRef.current, {
-          onFrame: async () => {
-            await poseRef.current.send({ image: videoRef.current });
-          },
-          width: 640,
-          height: 480,
-        });
+      poseRef.current = pose;
+      return true;
+    } catch (error) {
+      console.error('Pose initialization failed:', error);
+      setCameraError('Pose detection failed to initialize');
+      return false;
+    }
+  }, []);
+
+  const checkPosture = useCallback(async () => {
+    if (!isActiveRef.current) return;
+
+    try {
+      // Clean up any previous session but keep pose detection
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
-    };
 
-    const drawLandmarks = (ctx, landmarks) => {
-      ctx.fillStyle = '#00FF00';
-      landmarks.forEach(landmark => {
-        const x = landmark.x * canvasRef.current.width;
-        const y = landmark.y * canvasRef.current.height;
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, 2 * Math.PI);
-        ctx.fill();
+      if (cameraRef.current) {
+        try {
+          cameraRef.current.stop();
+        } catch (e) {
+          console.error('Error stopping camera:', e);
+        }
+        cameraRef.current = null;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' },
+        audio: false
+      }).catch(err => {
+        throw new Error('Camera access denied');
       });
 
-      // Draw connections between landmarks
-      ctx.strokeStyle = '#00FF00';
-      ctx.lineWidth = 2;
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
       
-      // Shoulder line
-      ctx.beginPath();
-      ctx.moveTo(landmarks[11].x * canvasRef.current.width, landmarks[11].y * canvasRef.current.height);
-      ctx.lineTo(landmarks[12].x * canvasRef.current.width, landmarks[12].y * canvasRef.current.height);
-      ctx.stroke();
-    };
+      await new Promise((resolve) => {
+        videoRef.current.onloadedmetadata = resolve;
+      });
+      
+      await videoRef.current.play().catch(console.warn);
 
-    const showPostureAlert = () => {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 24px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('⚠️ Sit up straight!', canvas.width/2, 50);
-    };
+      const poseReady = await initializePoseDetection();
+      if (!poseReady) return;
 
-    return () => {
-      if (poseRef.current?.close) poseRef.current.close();
-      if (cameraRef.current) cameraRef.current.stop();
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      document.body.removeChild(scriptPose);
-      document.body.removeChild(scriptCamera);
-    };
-  }, []);
+      // NEW: Start processing frames
+      shouldProcessFramesRef.current = true;
 
-  const checkPosture = async () => {
-    setIsMonitoring(true);
-    setLastChecked(new Date());
-    if (cameraRef.current) {
-      cameraRef.current.start();
-      setTimeout(() => {
-        cameraRef.current?.stop();
-        setIsMonitoring(false);
-      }, 10000); // Run for 10 seconds instead of 5
+      cameraRef.current = new window.Camera(videoRef.current, {
+        onFrame: async () => {
+          // NEW: Only process frames if we should be processing
+          if (!shouldProcessFramesRef.current || !poseRef.current) return;
+          try {
+            await poseRef.current.send({ image: videoRef.current });
+          } catch (error) {
+            // Ignore errors when not active
+            if (shouldProcessFramesRef.current) {
+              console.error('Frame processing error:', error);
+            }
+          }
+        },
+        width: 640,
+        height: 480
+      });
+
+      await cameraRef.current.start();
+      setIsMonitoring(true);
+
+      // Check for 10 seconds
+      await new Promise(resolve => {
+        timeoutRef.current = setTimeout(() => {
+          if (isActiveRef.current) {
+            resolve();
+          }
+        }, 10000);
+      });
+    } catch (error) {
+      console.error('Posture check failed:', error);
+      setCameraError(error.message);
+    } finally {
+      // NEW: Stop processing frames before cleanup
+      shouldProcessFramesRef.current = false;
+      
+      if (isActiveRef.current) {
+        await stopAll();
+      }
     }
-  };
+  }, [initializePoseDetection, stopAll]);
 
-  useEffect(() => {
-    const initialTimer = setTimeout(checkPosture, 1000);
-    intervalRef.current = setInterval(checkPosture, 300000); // Still every 5 minutes
+  const startMonitoring = useCallback(() => {
+    if (isActiveRef.current) return;
     
-    return () => {
-      clearTimeout(initialTimer);
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
+    isActiveRef.current = true;
+    checkPosture();
+    intervalRef.current = setInterval(checkPosture, intervalMinutes * 60 * 1000);
+  }, [checkPosture, intervalMinutes]);
 
-  const getStatusColor = () => {
-    switch(postureStatus) {
-      case 'good': return 'bg-green-500';
-      case 'bad': return 'bg-red-500';
-      default: return 'bg-gray-500';
-    }
-  };
-
-  const formatLastChecked = () => {
-    if (!lastChecked) return 'Never';
-    return lastChecked.toLocaleTimeString();
-  };
+  const handleStop = useCallback(async () => {
+    if (!isActiveRef.current) return;
+    
+    await stopAll();
+  }, [stopAll]);
 
   return (
     <div className="app-container">
-      <div className="app-header">
+      <header className="app-header">
         <h1>Posture Monitor</h1>
-      </div>
-      
+      </header>
       <div className="app-content">
-        <div className="camera-section">
-          <div className="canvas-wrapper">
-            <canvas 
-              ref={canvasRef} 
-              width="640" 
-              height="480"
-              className="posture-canvas"
-            />
-            {isMonitoring && (
-              <div className="monitoring-indicator">
-                Monitoring...
-              </div>
-            )}
+        <div className="camera-section" style={{ position: 'relative', width: '640px', margin: 'auto' }}>
+          <canvas
+            ref={canvasRef}
+            width={640}
+            height={480}
+            className="posture-canvas"
+            style={{ borderRadius: '8px', backgroundColor: '#fff' }}
+          />
+          {isMonitoring && (
+            <div
+              className="monitoring-indicator"
+              style={{
+                position: 'absolute',
+                top: 10,
+                left: 10,
+                backgroundColor: '#3b82f6',
+                color: 'white',
+                padding: '5px 10px',
+                borderRadius: '20px',
+                fontSize: '14px',
+                fontWeight: '500',
+                animation: 'pulse 1.5s infinite',
+              }}
+            >
+              Monitoring...
+            </div>
+          )}
+          <video
+            ref={videoRef}
+            width={640}
+            height={480}
+            className="hidden-video"
+            muted
+            playsInline
+            style={{ display: 'block', position: 'absolute', top: 0, left: 0, opacity: 0 }}
+          />
+          <div className="action-buttons" style={{ marginTop: '15px', textAlign: 'center' }}>
+            <button
+              className="check-button"
+              onClick={startMonitoring}
+              disabled={!scriptsReady || isMonitoring || loading}
+              style={{ marginRight: '10px' }}
+            >
+              {loading ? 'Loading...' : 'Start Monitoring'}
+            </button>
+            <button
+              className="stop-button"
+              onClick={handleStop}
+              disabled={!isMonitoring}
+            >
+              Stop Monitoring
+            </button>
           </div>
         </div>
-        
-        <div className="control-section">
+
+        <div className="control-section" style={{ marginTop: '20px', textAlign: 'center' }}>
           <div className="status-card">
-            <h2>Posture Status</h2>
-            <div className="status-indicator">
-              <div className={`status-dot ${postureStatus}`}></div>
-              <span className="status-text">
-                {postureStatus === 'good' ? 'Good posture!' : 
-                 postureStatus === 'bad' ? 'Improve your posture' : 'Waiting for data...'}
+            <h2>Status</h2>
+            <div className="status-indicator" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+              <span
+                className={`status-dot ${postureStatus}`}
+                style={{
+                  display: 'inline-block',
+                  width: '15px',
+                  height: '15px',
+                  borderRadius: '50%',
+                  backgroundColor:
+                    postureStatus === 'good'
+                      ? '#10b981'
+                      : postureStatus === 'bad'
+                      ? '#ef4444'
+                      : '#fbbf24',
+                }}
+              />
+              <span
+                className={postureStatus === 'bad' ? 'error' : ''}
+                style={{ fontSize: '18px', fontWeight: '600' }}
+              >
+                {postureStatus}
               </span>
             </div>
+            {cameraError && <div className="error-message" style={{ color: 'red', marginTop: '10px' }}>{cameraError}</div>}
           </div>
-          
-          <div className="status-card">
-            <h2>Last Check</h2>
-            <p className="status-time">{lastChecked ? lastChecked.toLocaleTimeString() : 'Never'}</p>
-          </div>
-          
-          <div className="status-card">
-            <h2>Next Check</h2>
-            <p className="status-time">
-              {lastChecked ? 
-                new Date(lastChecked.getTime() + 300000).toLocaleTimeString() : 
-                'Soon'}
-            </p>
-          </div>
-          
-          <button 
-            onClick={checkPosture}
-            className="check-button"
-          >
-            Check Posture Now
-          </button>
+          <div style={{ marginTop: '15px' }}>
+            <label>Check interval (minutes): </label>
+            <input
+              type="number"
+              value={intervalMinutes}
+              onChange={(e) => setIntervalMinutes(Math.max(1, Math.min(60, Number(e.target.value))))}
+              min="1"
+              max="60"
+              style={{ padding: '5px', borderRadius: '6px', width: '60px' }}
+            />
+        </div>
         </div>
       </div>
-      
-      <div className="app-footer">
-        <div className="tip-box">
-          <span className="tip-icon">ℹ️</span>
-          <p className="tip-text">
-            For best results, sit about 2-3 feet from your camera and ensure your upper body is visible.
-          </p>
-        </div>
-      </div>
-      
-      <video ref={videoRef} className="hidden-video" playsInline />
     </div>
   );
 }
